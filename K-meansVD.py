@@ -1,12 +1,15 @@
 import numpy as np
 from collections import defaultdict
 from sklearn.metrics.pairwise import cosine_similarity
+from skopt import gp_minimize
+from skopt.space import Integer, Real
+from skopt.utils import use_named_args
+from sklearn.metrics import silhouette_score
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import sys
 
 class ShortTermMemory:
-    def __init__(self, max_iter=10, random_state=92, decay_rate=0.95, boost_rate=1.1, attention_threshold=0.5):
+    def __init__(self, max_iter=15, random_state=92, decay_rate=0.95, boost_rate=1.1, attention_threshold=0.5):
         self.max_iter = max_iter
         self.random_state = random_state
         self.decay_rate = decay_rate
@@ -17,7 +20,11 @@ class ShortTermMemory:
         self.time_complexity = []
         self.space_complexity = []
     
-    def fit(self, X, n_clusters):
+    def fit(self, X):
+        # Use Bayesian Optimization to find the optimal number of clusters
+        optimal_params = self.fit_cluster(X)
+        n_clusters = optimal_params['n_clusters']
+        
         start_time = time.time()
         
         np.random.seed(self.random_state)
@@ -40,22 +47,86 @@ class ShortTermMemory:
         end_time = time.time()
         self.time_complexity.append(end_time - start_time)
         self.space_complexity.append(self._calculate_space_complexity())
+
+    def fit_cluster(self, X):
+    # Define the search space for Bayesian optimization
+        space  = [
+            Integer(2, min(len(X), 8000), name='n_clusters'),  # Number of clusters, minimum 2
+        ]
     
-    def _assign_clusters(self, X):
+        @use_named_args(space)
+        def objective(**params):
+            n_clusters = params['n_clusters']
+            
+        
+            # Initialize the centroids
+            centroids = X[np.random.choice(X.shape[0], n_clusters, replace=False)]
+            centroids = centroids / np.linalg.norm(centroids, axis=1, keepdims=True)
+        
+            # Fit the model
+            start_time = time.time()
+            for iteration in range(self.max_iter):
+                clusters = self._assign_clusters(X, centroids)
+                new_centroids = self._update_centroids(X, clusters, centroids)
+            
+                if np.allclose(centroids, new_centroids, atol=1e-5):
+                    break
+            
+                centroids = new_centroids
+        
+            end_time = time.time()
+        
+            # Calculate inertia
+            inertia = np.sum(np.min(cosine_similarity(X, centroids), axis=1))
+
+            # Calculate silhouette score if possible
+            try:
+                silhouette_avg = silhouette_score(X, clusters)
+            except ValueError:
+                # If silhouette score can't be calculated, use a default value
+                silhouette_avg = 0
+        
+            # Calculate space complexity
+            space_complexity = n_clusters * X.shape[1]
+        
+            # Calculate time complexity
+            time_complexity = end_time - start_time
+        
+            # Define loss function (example: weighted sum of inertia and inverse silhouette score)
+            loss = inertia - silhouette_avg + 0.01 * space_complexity + 0.01 * time_complexity
+        
+            # Add small random noise to encourage exploration
+            loss += np.random.normal(0, 0.1)
+        
+            return loss
+    
+        # Perform Bayesian optimization with adjusted parameters
+        res = gp_minimize(objective, space, n_calls=30, n_random_starts=20, random_state=self.random_state)
+    
+        print("Optimal parameters:", res.x)
+        print("Minimum loss:", res.fun)
+    
+        return {'n_clusters': res.x[0], 'smoothness': res.x[1]}
+
+    def _assign_clusters(self, X, centroids=None):
+        if centroids is None:
+            centroids = self.centroids
         normalized_X = X / np.linalg.norm(X, axis=1, keepdims=True)
-        similarities = cosine_similarity(normalized_X, self.centroids)
+        similarities = cosine_similarity(normalized_X, centroids)
         return np.argmax(similarities, axis=1)
     
-    def _update_centroids(self, X, clusters):
+    def _update_centroids(self, X, clusters, centroids=None):
+        if centroids is None:
+            centroids = self.centroids
         new_centroids = []
-        for i in range(len(self.centroids)):
+        for i in range(len(centroids)):
             cluster_points = X[clusters == i]
             if len(cluster_points) > 0:
                 new_centroid = np.mean(cluster_points, axis=0)
                 new_centroid /= np.linalg.norm(new_centroid)
                 new_centroids.append(new_centroid)
             else:
-                new_centroids.append(self.centroids[i])
+                new_centroids.append(centroids[i])
         return np.array(new_centroids)
     
     def _populate_hash_table(self, X, clusters):
@@ -74,11 +145,47 @@ class ShortTermMemory:
         
         self.hash_table[tuple(self.centroids[nearest_cluster])].append((normalized_vector, 1.0))
         
+        # Perform regional k-means clustering
+        self._regional_clustering(nearest_cluster)
+        
         end_time = time.time()
         self.time_complexity.append(end_time - start_time)
         self.space_complexity.append(self._calculate_space_complexity())
-    
-    def search(self, query_vector, top_k=4):
+
+    def _regional_clustering(self, cluster_index):
+        cluster_vectors = [v for v, _ in self.hash_table[tuple(self.centroids[cluster_index])]]
+        if len(cluster_vectors) > max(10, int(0.1 * len(self.centroids))):  # Adjust these thresholds as needed
+            X = np.array(cluster_vectors)
+            optimal_params = self.fit_cluster(X)
+            n_clusters = optimal_params['n_clusters']
+            
+            if n_clusters > 1:
+                new_centroids = X[np.random.choice(X.shape[0], n_clusters, replace=False)]
+                new_centroids = new_centroids / np.linalg.norm(new_centroids, axis=1, keepdims=True)
+                
+                for iteration in range(self.max_iter):
+                    clusters = self._assign_clusters(X, new_centroids)
+                    updated_centroids = self._update_centroids(X, clusters, new_centroids)
+                    
+                    if np.allclose(new_centroids, updated_centroids, atol=1e-5):
+                        break
+                    
+                    new_centroids = updated_centroids
+                
+                # Update hash table with new clusters
+                del self.hash_table[tuple(self.centroids[cluster_index])]
+                for i, centroid in enumerate(new_centroids):
+                    self.hash_table[tuple(centroid)] = [(X[j], 1.0) for j in np.where(clusters == i)[0]]
+                
+                # Update centroids
+                self.centroids = np.vstack((np.delete(self.centroids, cluster_index, axis=0), new_centroids))
+            else:
+                # If only one cluster is formed, keep the existing centroid
+                print("Only one cluster formed during regional clustering. Keeping existing centroid.")
+        else:
+            print(f"Not enough vectors ({len(cluster_vectors)}) for regional clustering. Skipping.")
+
+    def search(self, query_vector, top_k=5):
         start_time = time.time()
         
         normalized_query = query_vector / np.linalg.norm(query_vector)
@@ -108,53 +215,6 @@ class ShortTermMemory:
         
         return most_similar_vectors[:top_k]
 
-    def threaded_search(self, query_vector, top_k=3, similarity_threshold=0.5):
-        start_time = time.time()
-    
-        normalized_query = query_vector / np.linalg.norm(query_vector)
-    
-        def search_centroid_batch(centroid_indices):
-            results = []
-            for centroid_idx in centroid_indices:
-                centroid = self.centroids[centroid_idx]
-                similarity = cosine_similarity(normalized_query.reshape(1, -1), centroid.reshape(1, -1))[0][0]
-                if similarity > similarity_threshold:
-                    vectors = self.hash_table[tuple(centroid)]
-                    if vectors:
-                        vector_similarities = cosine_similarity(normalized_query.reshape(1, -1), [v for v, _ in vectors])[0]
-                        best_idx = np.argmax(vector_similarities)
-                        results.append((vectors[best_idx][0], vector_similarities[best_idx], centroid_idx))
-            return results
-    
-        num_centroids = len(self.centroids)
-        num_threads = min(32, num_centroids)  # Limit the number of threads
-        batch_size = (num_centroids + num_threads - 1) // num_threads  # Divide work into batches
-    
-        centroid_batches = [range(i, min(i + batch_size, num_centroids)) for i in range(0, num_centroids, batch_size)]
-    
-        with ThreadPoolExecutor(max_workers=num_threads) as executor:
-            future_to_batch = {executor.submit(search_centroid_batch, batch): batch for batch in centroid_batches}
-        
-            results = []
-            for future in as_completed(future_to_batch):
-                results.extend(future.result())
-    
-        valid_results = sorted(results, key=lambda x: x[1], reverse=True)
-    
-        # Boost attention for the top results
-        for _, _, centroid_idx in valid_results[:top_k]:
-            centroid = self.centroids[centroid_idx]
-            vectors = self.hash_table[tuple(centroid)]
-            for i, (vector, attention) in enumerate(vectors):
-                vectors[i] = (vector, min(attention * self.boost_rate, 1.0))
-    
-        end_time = time.time()
-        self.time_complexity.append(end_time - start_time)
-        self.space_complexity.append(self._calculate_space_complexity())
-    
-        return valid_results[:top_k]
-
-    
     def maintain_memory(self):
         for centroid, vectors in self.hash_table.items():
             updated_vectors = []
@@ -181,13 +241,12 @@ class ShortTermMemory:
     
         if operation == 'add_vector':
             print(f"Estimated time complexity: O(n*d) where n={n} (clusters) and d={d} (dimensions)")
-        elif operation in ['search', 'threaded_search']:
+        elif operation in ['search']:
             print(f"Estimated time complexity: O(n*d + k*m*d) where n={n} (clusters), m={m} (vectors), d={d} (dimensions), and k is the number of top centroids")
         elif operation == 'maintain_memory':
             print(f"Estimated time complexity: O(m) where m={m} (total vectors)")
     
         return result
-
 
     def analyze_space_complexity(self):
         total_size = sum(sys.getsizeof(centroid) + sum(sys.getsizeof(v) + sys.getsizeof(a) for v, a in vectors) 
@@ -230,17 +289,6 @@ class ShortTermMemory:
         print(f"Average search time: {np.mean(search_times):.6f} seconds")
         print(f"Estimated time complexity: O(n*d + k*m*d) per operation")
         
-        # Analyze threaded_search
-        threaded_search_times = []
-        for _ in range(n_operations):
-            query = np.random.rand(self.centroids.shape[1])
-            start_time = time.perf_counter()
-            self.threaded_search(query)
-            end_time = time.perf_counter()
-            threaded_search_times.append(end_time - start_time)
-        print(f"Average threaded_search time: {np.mean(threaded_search_times):.6f} seconds")
-        print(f"Estimated time complexity: O(n*d + k*m*d) per operation, but with potential speedup from parallelization")
-        
         # Analyze maintain_memory
         start_time = time.perf_counter()
         self.maintain_memory()
@@ -251,17 +299,16 @@ class ShortTermMemory:
         # Analyze space complexity
         self.analyze_space_complexity()
 
-# Generate some sample data
+# Usage example
 np.random.seed(42)
-sample_data = np.random.rand(60000, 256)  # 60000 vectors of dimension 256
+sample_data = np.random.rand(60000, 768)  # 10000 vectors of dimension 256
 
-# Initialize and fit the ShortTermMemory
 stm = ShortTermMemory(max_iter=100, random_state=42)
-stm.fit(sample_data, n_clusters=15000)
+stm.fit(sample_data)
 print("Fitting completed successfully")
 
 # Add some vectors
-for _ in range(1000):
+for _ in range(6000):
     new_vector = np.random.rand(256)
     stm.add_vector(new_vector)
 
@@ -269,10 +316,7 @@ for _ in range(1000):
 query_vector = np.random.rand(256)
 
 print("\nRegular Search:")
-stm.analyze_time_complexity('search', query_vector, top_k=4)
-
-print("\nThreaded Search:")
-stm.analyze_time_complexity('threaded_search', query_vector, top_k=4, similarity_threshold=0.5)
+stm.analyze_time_complexity('search', query_vector, top_k=5)
 
 # Perform bulk analysis
 stm.analyze_operations(n_operations=100)

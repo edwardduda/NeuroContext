@@ -1,6 +1,21 @@
 # NeuroContext - Memory storage for Large Language Model context.
 This project focuses on creating a self-organizing vector embedding space used to improve traversal and Retrieval-Augmented Generation to improve the accuracy, reliability, and quality of Large Langauge Models. 
 
+
+## Table of Contents
+1. [Introduction](#introduction)
+2. [Background](#background)
+3. [Cosine Similarity and its Role in Context](#cosine-similarity-and-its-role-in-context)
+4. [K-means Clustering](#k-means-clustering)
+5. [Installation and Setup](#installation-and-setup)
+6. [Usage](#usage)
+7. [Approach](#approach)
+8. [Results](#results)
+9. [Conclusion](#conclusion)
+10. [Contributing](#contributing)
+11. [References](#references)
+
+
 ## Background
 
 Vector embeddings are a way of representing discrete data in a continuous vector space of n dimensions. This process transforms data into a numerical format that preserves the relationships and structure within the data. By mapping data to a vector embedding space, these embeddings allow AI algorithms, such as neural networks, to interpret and utilize the underlying patterns and meanings within the data.
@@ -27,5 +42,6 @@ Iterate: Repeat the assignment and update steps until the centroids no longer ch
 K-means is efficient and easy to implement, but it has some limitations, such as sensitivity to the initial placement of centroids and difficulty in determining the optimal number of clusters (k). Despite these challenges, it is widely used for tasks like market segmentation, image compression, and pattern recognition.
 
 ![k-means clustering simplified in 3-dimensions.](https://github.com/edwardduda/NeuroContext/blob/174930272101e329650ac97317969644adc38f3a/1_yBT_wK_lGPuuVvKgAuAtYg.png)
+
 
 

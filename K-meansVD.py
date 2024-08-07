@@ -19,7 +19,7 @@ class ShortTermMemory:
         self.hash_table = defaultdict(list)
         self.time_complexity = []
         self.space_complexity = []
-    
+
     def fit(self, X):
         # Use Bayesian Optimization to find the optimal number of clusters
         optimal_params = self.fit_cluster(X)
@@ -303,20 +303,20 @@ class ShortTermMemory:
 np.random.seed(42)
 sample_data = np.random.rand(60000, 768)  # 10000 vectors of dimension 256
 
-stm = ShortTermMemory(max_iter=100, random_state=42)
-stm.fit(sample_data)
+##stm = ShortTermMemory(max_iter=100, random_state=42)
+#stm.fit(sample_data)
 print("Fitting completed successfully")
 
 # Add some vectors
 for _ in range(6000):
     new_vector = np.random.rand(256)
-    stm.add_vector(new_vector)
+    #stm.add_vector(new_vector)
 
 # Compare regular search and threaded search
 query_vector = np.random.rand(256)
 
 print("\nRegular Search:")
-stm.analyze_time_complexity('search', query_vector, top_k=5)
+#stm.analyze_time_complexity('search', query_vector, top_k=5)
 
 # Perform bulk analysis
-stm.analyze_operations(n_operations=100)
+#stm.analyze_operations(n_operations=100)
